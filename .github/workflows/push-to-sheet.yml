@@ -25,6 +25,9 @@ jobs:
           EVENT_NAME="${{ github.event_name }}"
           echo "Event: $EVENT_NAME" >&2
 
+          # Default payload (safe fallback)
+          PAYLOAD=$(jq -n '{event_type:"other"}')
+
           if [ "$EVENT_NAME" = "push" ]; then
             actor="${{ github.actor }}"
             repo="${{ github.repository }}"
@@ -64,24 +67,4 @@ jobs:
               --arg url "$url" \
               --arg actor "$actor" \
               --arg repo "$repo" \
-              '{event_type:$type, tag:$tag, actor:$actor, repo:$repo, url:$url}')
-          else
-            PAYLOAD=$(jq -n '{event_type:"other"}')
-          fi
-
-          # base64-encode safely for cross-step transport
-          PAYLOAD_B64=$(printf '%s' "$PAYLOAD" | base64 -w0)
-          {
-            echo "payload_b64=$PAYLOAD_B64"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: POST to Google Sheet Apps Script (safe decode & follow redirects)
-        env:
-          SHEET_URL: ${{ secrets.SHEET_URL }}
-          SHEET_SECRET: ${{ secrets.SHEET_SECRET }}
-        run: |
-          set -euo pipefail
-          echo "Decoding payload and posting to sheet..." >&2
-
-          # decode base64 payload into tmp file (safe: no quoting issues)
-          echo "${{ steps.build.outputs.payload_b64 }}_
+              '{event_type:$type, tag:$tag, actor:$actor, repo:$repo, url_
