@@ -15,8 +15,8 @@ jobs:
       - name: Checkout (optional)
         uses: actions/checkout@v4
 
-      - name: Install jq & curl
-        run: sudo apt-get update && sudo apt-get install -y jq curl
+      - name: Install jq & curl & base64
+        run: sudo apt-get update && sudo apt-get install -y jq curl coreutils
 
       - name: Build payload
         id: build
@@ -25,13 +25,10 @@ jobs:
           EVENT_NAME="${{ github.event_name }}"
           echo "Event: $EVENT_NAME" >&2
 
-          PAYLOAD='{}'
-
           if [ "$EVENT_NAME" = "push" ]; then
             actor="${{ github.actor }}"
             repo="${{ github.repository }}"
             ref="${{ github.ref }}"
-            # Safely extract fields from the full event JSON using jq
             commit_msg=$(jq -r '.head_commit.message // ""' <<< '${{ toJson(github.event) }}')
             url=$(jq -r '.head_commit.url // ""' <<< '${{ toJson(github.event) }}')
             PAYLOAD=$(jq -n \
@@ -72,30 +69,35 @@ jobs:
             PAYLOAD=$(jq -n '{event_type:"other"}')
           fi
 
-          # Safely write multiline output to GITHUB_OUTPUT (required format)
-          # This avoids invalid-format errors when payload contains newlines/quotes.
+          # produce base64 and emit as action output safely
+          PAYLOAD_B64=$(printf '%s' "$PAYLOAD" | base64 -w0)
           {
-            echo "payload<<EOF"
-            echo "$PAYLOAD"
-            echo "EOF"
+            echo "payload_b64=$PAYLOAD_B64"
           } >> "$GITHUB_OUTPUT"
 
-      - name: POST to Google Sheet Apps Script (verbose)
+      - name: POST to Google Sheet Apps Script (safe decode)
         env:
           SHEET_URL: ${{ secrets.SHEET_URL }}
           SHEET_SECRET: ${{ secrets.SHEET_SECRET }}
         run: |
           set -euo pipefail
-          echo "Posting to sheet..." >&2
-          # write the build output to a tmp file
-          echo "${{ steps.build.outputs.payload }}" | jq -c '.' > /tmp/payload.json
+          echo "Decoding payload and posting to sheet..." >&2
+
+          # decode base64 payload into tmp file (safe: no quoting issues)
+          echo "${{ steps.build.outputs.payload_b64 }}" | base64 --decode > /tmp/payload.json
+
+          echo "Payload (debug):" >&2
+          jq -C '.' /tmp/payload.json >&2 || true
+
           HTTP_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$SHEET_URL" \
             -H "Content-Type: application/json" \
             -H "X-SHEET-SECRET: $SHEET_SECRET" \
             --data-binary @/tmp/payload.json || true)
+
           echo "---- BEGIN response ----"
           echo "$HTTP_RESPONSE"
           echo "---- END response ----"
+
           HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tr -d '\r' | sed -n 's/.*HTTP_STATUS:\([0-9]\{3\}\)$/\1/p')
           if [ -z "$HTTP_STATUS" ]; then
             echo "No HTTP status found; failing job" >&2
