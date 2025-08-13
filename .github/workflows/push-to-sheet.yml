@@ -1,27 +1,37 @@
 name: Push GitHub activity to Google Sheet
+
 on:
-  push:
-    types: [created, deleted]
+  push:            # triggers on all pushes (no types filter)
   pull_request:
     types: [opened, closed, reopened]
   release:
     types: [published]
+  workflow_dispatch:   # allow manual runs from the Actions UI
 
 jobs:
   post-to-sheet:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (optional)
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+
       - name: Build payload
         id: build
         run: |
-          EVENT_NAME=${{ github.event_name }}
+          set -euo pipefail
+          EVENT_NAME="${{ github.event_name }}"
+          echo "Event: $EVENT_NAME"
           PAYLOAD='{}'
           if [ "$EVENT_NAME" = "push" ]; then
             actor="${{ github.actor }}"
             repo="${{ github.repository }}"
             ref="${{ github.ref }}"
-            commit_msg="${{ github.event.head_commit.message || '' }}"
-            url="${{ github.event.head_commit.url || '' }}"
+            # head_commit may be null for some pushes (e.g., tag deletes), guard it
+            commit_msg="$(jq -r '.head_commit.message // ""' <<< '${{ toJson(github.event) }}')"
+            url="$(jq -r '.head_commit.url // ""' <<< '${{ toJson(github.event) }}')"
             PAYLOAD=$(jq -n \
               --arg type "push" \
               --arg actor "$actor" \
@@ -57,17 +67,33 @@ jobs:
               --arg repo "$repo" \
               '{event_type:$type, tag:$tag, actor:$actor, repo:$repo, url:$url}')
           else
-            PAYLOAD=$(jq -n '{event_type:"other"}')
+            PAYLOAD=$(jq -n '{event_type:"other", raw:true}')
           fi
-          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
+          echo "payload=$PAYLOAD" >> "$GITHUB_OUTPUT"
 
-      - name: POST to Google Sheet Apps Script
+      - name: POST to Google Sheet Apps Script (verbose)
         env:
           SHEET_URL: ${{ secrets.SHEET_URL }}
           SHEET_SECRET: ${{ secrets.SHEET_SECRET }}
         run: |
+          set -euo pipefail
+          echo "Posting to sheet..."
           echo "${{ steps.build.outputs.payload }}" | jq -c '.' > /tmp/payload.json
-          curl -s -X POST "$SHEET_URL" \
+          # verbose curl: capture body and status
+          HTTP_RESPONSE=$(curl -s -w "\\nHTTP_STATUS:%{http_code}" -X POST "$SHEET_URL" \
             -H "Content-Type: application/json" \
             -H "X-SHEET-SECRET: $SHEET_SECRET" \
-            -d @/tmp/payload.json | jq .
+            --data-binary @/tmp/payload.json || true)
+          echo "---- BEGIN response ----"
+          echo "$HTTP_RESPONSE"
+          echo "---- END response ----"
+          # fail if status not 2xx
+          HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tr -d '\r' | sed -n 's/.*HTTP_STATUS:\([0-9][0-9][0-9]\)$/\1/p')
+          if [ -z "$HTTP_STATUS" ]; then
+            echo "No HTTP status found; failing job"
+            exit 1
+          fi
+          if [ "${HTTP_STATUS:0:1}" != "2" ]; then
+            echo "Non-2xx response: $HTTP_STATUS"
+            exit 1
+          fi
