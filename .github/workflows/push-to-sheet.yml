@@ -1,12 +1,10 @@
-name: Push GitHub activity to Google Sheet
+name: Post to Google Sheet
 
 on:
   push:
   pull_request:
-    types: [opened, closed, reopened]
   release:
     types: [published]
-  workflow_dispatch:
 
 jobs:
   post-to-sheet:
@@ -15,12 +13,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y jq curl coreutils
-
-      - name: Save event JSON
+      - name: Save GitHub event to file
         run: |
-          echo '${{ toJson(github.event) }}' > event.json
+          mkdir -p tmp
+          echo '${{ toJSON(github.event) }}' > event.json
 
       - name: Build payload
         id: build
@@ -44,44 +40,48 @@ jobs:
               --arg message "$commit_msg" \
               --arg url "$url" \
               '{event_type:$type, actor:$actor, repo:$repo, ref:$ref, message:$message, url:$url}')
+          
           elif [ "$EVENT_NAME" = "pull_request" ]; then
-            pr_action=$(jq -r '.action // ""' event.json)
-            pr_title=$(jq -r '.pull_request.title // ""' event.json)
-            pr_url=$(jq -r '.pull_request.html_url // ""' event.json)
+            title=$(jq -r '.pull_request.title // ""' event.json)
+            url=$(jq -r '.pull_request.html_url // ""' event.json)
             PAYLOAD=$(jq -n \
               --arg type "pull_request" \
-              --arg action "$pr_action" \
-              --arg title "$pr_title" \
-              --arg url "$pr_url" \
               --arg actor "$actor" \
               --arg repo "$repo" \
-              '{event_type:$type, action:$action, actor:$actor, repo:$repo, message:$title, url:$url}')
+              --arg ref "$ref" \
+              --arg title "$title" \
+              --arg url "$url" \
+              '{event_type:$type, actor:$actor, repo:$repo, ref:$ref, title:$title, url:$url}')
+          
           elif [ "$EVENT_NAME" = "release" ]; then
-            tag=$(jq -r '.release.tag_name // ""' event.json)
+            name=$(jq -r '.release.name // ""' event.json)
             url=$(jq -r '.release.html_url // ""' event.json)
             PAYLOAD=$(jq -n \
               --arg type "release" \
-              --arg tag "$tag" \
-              --arg url "$url" \
               --arg actor "$actor" \
               --arg repo "$repo" \
-              '{event_type:$type, tag:$tag, actor:$actor, repo:$repo, url:$url}')
+              --arg ref "$ref" \
+              --arg name "$name" \
+              --arg url "$url" \
+              '{event_type:$type, actor:$actor, repo:$repo, ref:$ref, name:$name, url:$url}')
+          
           else
             PAYLOAD=$(jq -n '{event_type:"other"}')
           fi
 
-          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
+          # Escape for GitHub Actions output
+          escaped_payload=$(echo "$PAYLOAD" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+          echo "payload=$escaped_payload" >> "$GITHUB_OUTPUT"
 
       - name: Post to Google Sheet
         run: |
           set -euo pipefail
-          echo "Posting to Google Sheet..." >&2
-
-          curl -sS -X POST "$SHEET_URL" \
+          echo "Posting payload to Google Sheet..." >&2
+          curl -s -X POST \
             -H "Content-Type: application/json" \
-            -H "X-SHEET-SECRET: $SHEET_SECRET" \
-            -d '${{ steps.build.outputs.payload }}'
-
+            -H "x-sheet-secret: $SHEET_SECRET" \
+            -d '${{ steps.build.outputs.payload }}' \
+            "$SHEET_URL"
         env:
           SHEET_URL: ${{ secrets.SHEET_URL }}
           SHEET_SECRET: ${{ secrets.SHEET_SECRET }}
