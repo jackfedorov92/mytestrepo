@@ -12,7 +12,7 @@ jobs:
   post-to-sheet:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (optional)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install tools
@@ -25,46 +25,12 @@ jobs:
           EVENT_NAME="${{ github.event_name }}"
           echo "Event: $EVENT_NAME" >&2
 
-          # Default payload (safe fallback)
+          EVENT_JSON='${{ toJson(github.event) }}'
+          actor="${{ github.actor }}"
+          repo="${{ github.repository }}"
+          ref="${{ github.ref }}"
+
           PAYLOAD=$(jq -n '{event_type:"other"}')
 
           if [ "$EVENT_NAME" = "push" ]; then
-            actor="${{ github.actor }}"
-            repo="${{ github.repository }}"
-            ref="${{ github.ref }}"
-            commit_msg=$(jq -r '.head_commit.message // ""' <<< '${{ toJson(github.event) }}')
-            url=$(jq -r '.head_commit.url // ""' <<< '${{ toJson(github.event) }}')
-            PAYLOAD=$(jq -n \
-              --arg type "push" \
-              --arg actor "$actor" \
-              --arg repo "$repo" \
-              --arg ref "$ref" \
-              --arg message "$commit_msg" \
-              --arg url "$url" \
-              '{event_type:$type, actor:$actor, repo:$repo, ref:$ref, message:$message, url:$url}')
-          elif [ "$EVENT_NAME" = "pull_request" ]; then
-            pr_action=$(jq -r '.action // ""' <<< '${{ toJson(github.event) }}')
-            pr_title=$(jq -r '.pull_request.title // ""' <<< '${{ toJson(github.event) }}')
-            pr_url=$(jq -r '.pull_request.html_url // ""' <<< '${{ toJson(github.event) }}')
-            actor="${{ github.actor }}"
-            repo="${{ github.repository }}"
-            PAYLOAD=$(jq -n \
-              --arg type "pull_request" \
-              --arg action "$pr_action" \
-              --arg title "$pr_title" \
-              --arg url "$pr_url" \
-              --arg actor "$actor" \
-              --arg repo "$repo" \
-              '{event_type:$type, action:$action, actor:$actor, repo:$repo, message:$title, url:$url}')
-          elif [ "$EVENT_NAME" = "release" ]; then
-            tag=$(jq -r '.release.tag_name // ""' <<< '${{ toJson(github.event) }}')
-            url=$(jq -r '.release.html_url // ""' <<< '${{ toJson(github.event) }}')
-            actor="${{ github.actor }}"
-            repo="${{ github.repository }}"
-            PAYLOAD=$(jq -n \
-              --arg type "release" \
-              --arg tag "$tag" \
-              --arg url "$url" \
-              --arg actor "$actor" \
-              --arg repo "$repo" \
-              '{event_type:$type, tag:$tag, actor:$actor, repo:$repo, url_
+            commit_msg=$(jq -r '.head_commit.message // ""' <<< "$EVE
